@@ -29,19 +29,31 @@ provider ──submit(artifact_url)───────────────
 Round one is **asymmetric**: only the provider holds a document, so a lazier
 prompt would let the leader's reading of it stand. The guard is therefore
 independent re-derivation - every validator fetches the artifact itself, applies
-the criteria itself, and the leader is accepted only if `verdict` matches and
-`payout_bps` is within 10 points of the validator's own read.
+the criteria itself, and the leader is accepted only if `verdict` and
+`payout_bps` match exactly. Both come from the same verdict lookup, so there is
+no numeric field left to drift between models.
 
 Round two is **adversarial**: both sides now hold documents, so the risk flips
 from laziness to deference. The round-two prompt must not treat round one as
 precedent, and counter evidence that ignores the written criteria counts for
 nothing - a document cannot win by being loud.
 
-Both rounds end in `_coerce()`, which re-pins `payout_bps` to its own `verdict`.
-Validator drift therefore cannot create money: the payout is a function of the
-decision, not a value the model gets to choose independently of it.
+Both rounds end in `_coerce()`, which **discards** any `payout_bps` the model
+returns and looks the amount up in `VERDICT_PAYOUT_BPS[verdict]` instead. The
+prompts no longer ask for a number, and `judge()` / `resolve_dispute()` write
+that same derived value to storage. This replaces the tolerance band Steward
+review rejected: previously `ACCEPT/7500` and `ACCEPT/8500` could both pass
+validation while the escrow paid out on the leader's 7500 bps. Validators now
+agree on the money because they only ever agree on the verdict.
+
+See [`docs/CORRECTION.md`](docs/CORRECTION.md) for the change record.
 
 ## Deployment
+
+> **v2 redeployment pending.** The address below is the v1 deployment whose
+> bytecode was reviewed and rejected. The corrected source in this repo is not
+> that bytecode; the resubmission carries the new explorer address, and
+> `verify_deployment.mjs` is re-run against it after deployment.
 
 | Item | Value |
 |---|---|
@@ -99,8 +111,9 @@ pip install -r requirements.txt
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests -q
 ```
 
-29 tests, about a third of a second, no network and no Docker. They cover the
-state machine, permission edges, all three verdict paths, payout drift,
+39 tests, about a third of a second, no network and no Docker. They cover the
+state machine, permission edges, all three verdict paths, verdict-derived
+payouts (including the exact 7500/8500 pair from the rejection, in both rounds),
 escalation timing, the pull ledger, and prompt interference (a document that
 tries to dictate the verdict does not get to dictate the verdict).
 

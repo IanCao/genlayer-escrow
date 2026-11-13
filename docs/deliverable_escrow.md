@@ -15,7 +15,8 @@ and no EVM contract can read a deliverable.
 This contract makes "good enough" a first-class settlement value. Acceptance is
 not boolean: it is **basis points**. `ACCEPT` pays 100%, `PARTIAL` pays 50%,
 `REJECT` pays 0%, and the escrow splits the balance accordingly instead of
-forcing an all-or-nothing flip.
+forcing an all-or-nothing flip. Those three numbers are constants of the
+contract, never outputs of the reviewer.
 
 ## State
 
@@ -70,17 +71,34 @@ Both rounds call `gl.vm.run_nondet_unsafe(leader_fn, validator_fn)`:
   `response_format="json"`, and returns a canonicalised JSON string
   (`json.dumps(..., sort_keys=True)`);
 - validator independently fetches, independently judges, and accepts only if
-  `verdict` matches **and** `payout_bps` is within ±10 percentage points of its
-  own honest read.
+  `verdict` matches **exactly** and `payout_bps` matches **exactly**.
 
-Comparing a numeric settlement field with a tolerance - rather than demanding an
-identical string - is what allows different validator models to agree on money
-while disagreeing on wording.
+The payout in that comparison is not a number the model produced. `_coerce()`
+discards any `payout_bps` the reviewer volunteers and looks the amount up in a
+single module-level table: `ACCEPT=10000`, `PARTIAL=5000`, `REJECT=0`.
+`judge()` and `resolve_dispute()` write to storage from the same table, so no
+path exists from a model's arithmetic to `_split()`. Validators agreeing on a
+verdict are necessarily agreeing on the amount that verdict pays.
 
-`_coerce()` then closes the loop between prose and money: if the model returns a
-`payout_bps` more than 25 points away from the canonical value for its own verdict
-(`ACCEPT=10000`, `PARTIAL=5000`, `REJECT=0`), the canonical value wins. A drifting
-model cannot turn a `REJECT` into a 40% payout.
+### Why there is no tolerance band
+
+The first submission compared payouts with a +/-1000 bps tolerance and only
+replaced a model-supplied amount when it drifted more than 2500 bps from the
+canonical value. That left a real hole: a leader returning `ACCEPT/7500` and a
+validator returning `ACCEPT/8500` both survived the clamp, both passed the
+tolerance check, and the escrow then settled on the leader's 7500 bps - money
+the validators had never agreed to. Steward review rejected the submission on
+exactly that point.
+
+Two changes close it, either of which alone would have been sufficient:
+
+1. **Derive, do not read.** The verdict is the only input to the amount; the
+   prompt no longer asks the reviewer for a payout number at all.
+2. **Exact agreement.** `validate()` compares `payout_bps` with `==` instead of
+   a tolerance band, as a second line of defence against future changes.
+
+`test_accept_cannot_release_two_different_amounts` replays the 7500/8500 pair
+and asserts that the escrow quotes 100%; the same pair is replayed for round two.
 
 ## Prompt-injection posture
 
@@ -92,7 +110,7 @@ satisfy anything - they fall to `REJECT`, not to a default approval.
 
 ## Why it is reusable
 
-The pair `(criteria, deliverable) -> payout_bps` is the whole primitive.
+The chain `(criteria, deliverable) -> verdict -> payout_bps` is the whole primitive.
 Integrators get freelance milestones, grant tranches, bug bounties, content
 licensing and SLA credits by writing different criteria - no contract change, no
 frontend required. The escalation round is boilerplate-free dispute handling that
@@ -100,11 +118,14 @@ most escrow implementations either omit or push to a human.
 
 ## Tests
 
-`tests/test_deliverable_escrow.py` covers funding guards (self-escrow, dust
+`tests/test_escrow_logic.py` (39 tests) covers funding guards (self-escrow, dust
 amount), provider-only submission, deadline expiry and `refund_expired`, round-1
 accept / partial / reject settlement splits, escalation-window enforcement,
 provider-only and client-only permissions, round-2 override of a wrong round-1
-rejection, validator agreement/dissent, and the money-binding rule in `_coerce`.
+rejection, validator agreement/dissent, and the money-binding rule. The
+regression group asserts that a model-supplied `payout_bps` is ignored for every
+verdict, that neither prompt asks for an amount, and that the exact 7500/8500
+pair from the Steward rejection settles at 100% in both rounds.
 
 ## Deploy
 

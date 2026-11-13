@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from helpers import ALICE, BOB, GEN, deploy_escrow
+from helpers import ALICE, BOB, GEN, deploy_escrow, load_contract
 
 DELIVERABLE_URL = "https://provider.example/deliverable"
 COUNTER_URL = "https://client.example/complaint"
@@ -189,11 +189,69 @@ def test_payout_is_bound_to_the_verdict():
     assert contract.get_escrow(escrow_id).payout_bps == 0
 
 
-def test_small_payout_drift_is_tolerated():
+def test_model_supplied_payout_is_ignored():
+    """The old behaviour tolerated 5500 for PARTIAL. Nothing the model says
+    about money now reaches storage."""
     module, contract = deploy_escrow()
     escrow_id = _judged(module, contract, "PARTIAL", 5500)
 
-    assert contract.get_escrow(escrow_id).payout_bps == 5500
+    assert contract.get_escrow(escrow_id).payout_bps == 5000
+    assert contract.quote_payout(escrow_id) == GEN // 2
+
+
+@pytest.mark.parametrize(
+    "verdict,bps,expected",
+    [
+        ("ACCEPT", 7500, 10000),
+        ("ACCEPT", 8500, 10000),
+        ("ACCEPT", 1, 10000),
+        ("PARTIAL", 5500, 5000),
+        ("PARTIAL", 9999, 5000),
+        ("REJECT", 4000, 0),
+        ("REJECT", 9999, 0),
+    ],
+)
+def test_payout_is_derived_strictly_from_verdict(verdict, bps, expected):
+    """Canonicalisation is a total function of the verdict, for both dict and
+    raw-string model outputs, including numbers far outside the old clamp."""
+    module = load_contract("contracts/deliverable_escrow.py")
+    payload = {"verdict": verdict, "payout_bps": bps, "reasoning": "x"}
+    for raw in (payload, json.dumps(payload)):
+        coerced = module._coerce(raw)
+        assert coerced["verdict"] == verdict
+        assert coerced["payout_bps"] == expected
+
+
+def test_accept_cannot_release_two_different_amounts():
+    """Regression for the Steward rejection of the first submission.
+
+    ACCEPT/7500 (leader) and ACCEPT/8500 (validator) both survived the old
+    +/-2500 canonical clamp, passed the old +/-1000 bps tolerance check, and
+    the escrow then settled on the leader's 7500 bps - an amount the validators
+    never agreed to. Both must now canonicalise to the same 10000 bps.
+    """
+    module, contract = deploy_escrow()
+    escrow_id = _delivered(module, contract)
+    module.gl.llm.queue(
+        r"acceptance reviewer of an escrow contract",
+        [_decision("ACCEPT", 7500), _decision("ACCEPT", 8500)],
+    )
+    module.gl.set_context(sender=ALICE, value=0)
+    contract.judge(escrow_id)
+
+    escrow = contract.get_escrow(escrow_id)
+    assert escrow.verdict == "ACCEPT"
+    assert escrow.payout_bps == 10000
+    assert contract.quote_payout(escrow_id) == GEN
+
+
+def test_prompt_never_asks_the_model_for_an_amount():
+    module, contract = deploy_escrow()
+    _judged(module, contract, "ACCEPT", 10000)
+
+    prompt = module.gl.llm.calls[0]
+    assert "payout_bps" not in prompt
+    assert "Never output a payout" in prompt
 
 
 # ------------------------------------------------------------------ escalation
@@ -245,6 +303,27 @@ def test_appeal_can_override_a_wrong_rejection():
 
     escrow = contract.get_escrow(escrow_id)
     assert escrow.status == "SETTLED"
+    assert escrow.final_verdict == "ACCEPT"
+    assert escrow.final_bps == 10000
+    assert contract.get_credit(BOB) == GEN
+    assert contract.get_credit(ALICE) == 0
+
+
+def test_appeal_payout_is_also_verdict_derived():
+    """Round two shared the old clamp and tolerance band, so it had the same
+    hole. Two validators disagreeing on the amount must still pay 100%."""
+    module, contract = deploy_escrow()
+    escrow_id = _judged(module, contract, "REJECT", 0)
+
+    module.gl.set_context(sender=ALICE, value=0)
+    contract.escalate(escrow_id, COUNTER_URL)
+    module.gl.llm.queue(
+        r"appeal reviewer of an escrow contract",
+        [_decision("ACCEPT", 7500), _decision("ACCEPT", 8500)],
+    )
+    contract.resolve_dispute(escrow_id)
+
+    escrow = contract.get_escrow(escrow_id)
     assert escrow.final_verdict == "ACCEPT"
     assert escrow.final_bps == 10000
     assert contract.get_credit(BOB) == GEN
