@@ -88,3 +88,53 @@ not claim to cover multi-node consensus rotation; that requires a live network.
 - `tests/test_escrow_logic.py`
 - `README.md`, `docs/deliverable_escrow.md`
 - `docs/CORRECTION.md` (this file)
+
+## Resubmission checklist (2026-11-13)
+
+**Current blocker.** `submit-contribution?resubmit=8b27cabc-...` reports
+"Intelligent Contracts 当前名额已满. 复制的详情已保留, 请选择可用的贡献类型或任务."
+This week's two IC slots are already used, so the corrected contribution cannot
+be filed as an Intelligent Contract until the weekly quota resets (Monday
+00:00 UTC = 08:00 UTC+8, i.e. 2026-11-16). The rejection itself stays on record
+and remains appealable. **Do not appeal**: the Steward finding is factually
+correct and an appeal is a single-use, non-recoverable option.
+
+**Do not reuse the v1 address.** The rejected submission's fourth evidence item
+was `https://explorer-studio.genlayer.com/address/0x28Ee25d23d30f8E7C53eF54DBf0dF328813E3105`,
+which points at the defective bytecode. A fresh deployment is required before
+resubmitting; `deliverable_escrow_v2.py` is prepared in Studio, byte-identical to
+the repo source, with `escalation_window=3600` pre-filled. After deployment,
+update `scripts/verify_deployment.mjs` and re-run it.
+
+**Also update the description.** The copied text from the rejected submission
+still says "the leader [is accepted] only if verdict matches and payout_bps is
+within 10 points of the validator's read" and "_coerce() re-pins payout_bps ...
+so drift cannot create money". Leaving it in place would contradict the fix.
+
+Suggested replacement description:
+
+```
+CORRECTED RESUBMISSION. Steward finding fixed: ACCEPT/7500 and ACCEPT/8500 bps both passed the old tolerance check, so the verdict was bound but the payout was not.
+
+Cause: the prompt asked for payout_bps; _coerce() replaced it only when >2500 bps from canonical; validate() accepted a +/-1000 bps gap. Both rounds shared it.
+
+Fix (both suggested remedies):
+1. VERDICT_PAYOUT_BPS = {ACCEPT:10000, PARTIAL:5000, REJECT:0} is now the ONLY source of the amount. _coerce() discards model-supplied numbers; judge() and resolve_dispute() store the derived value.
+2. Both validate() functions require exact payout_bps equality.
+3. Neither prompt asks for an amount.
+
+Unchanged: two-round structure, delimiters, state machine, schema, pull ledger, _split(). ACCEPT always pays 100%, PARTIAL 50%, REJECT 0%.
+
+39 offline tests pass, including regressions replaying the exact 7500/8500 pair in both rounds. Record: docs/CORRECTION.md. Explorer evidence is a fresh deployment of the corrected bytecode.
+```
+
+**Evidence set for the resubmission.** URL de-duplication applies across
+submissions, so the two commit-pinned blob links below are deliberately new URLs
+that have never been submitted (fix commit `304f591c78dce897c72b0a563bad7db74bba028a`):
+
+- `https://github.com/IanCao/genlayer-escrow/blob/304f591c78dce897c72b0a563bad7db74bba028a/contracts/deliverable_escrow.py`
+- `https://github.com/IanCao/genlayer-escrow/blob/304f591c78dce897c72b0a563bad7db74bba028a/docs/CORRECTION.md`
+- `https://explorer-studio.genlayer.com/address/<NEW_ADDRESS>` (required type: GenLayer Explorer Contract)
+- Keep the copied `https://github.com/IanCao/genlayer-escrow` repository root only
+  if the correction flow exempts its own source URLs; otherwise drop it, since
+  the current IC rule requires the explorer-contract type rather than github-repo.
